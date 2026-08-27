@@ -1,14 +1,6 @@
-# For most projects, this workflow file will not need changing; you simply need
-# to commit it to your repository.
-#
-# You may wish to alter this file to override the set of languages analyzed,
-# or to provide custom queries or build logic.
-#
-# ******** NOTE ********
-# We have attempted to detect the languages in your repository. Please check
-# the `language` matrix defined below to confirm you have the correct set of
-# supported CodeQL languages.
-#
+# CodeQL 扫描 workflow - concourse (Go)
+# 默认查询套件 + SARIF 结果下载
+# 说明：基于仓库原有 codeql-analysis.yml 增强，新增 SARIF 显式输出、空目录守卫与 artifact 上传
 name: "CodeQL"
 
 on:
@@ -16,9 +8,10 @@ on:
     branches: [ master, release/* ]
   pull_request:
     # The branches below must be a subset of the branches above
-    branches: [ master, release/*]
+    branches: [ master, release/* ]
   schedule:
     - cron: '24 10 * * 4'
+  workflow_dispatch:
 
 jobs:
   analyze:
@@ -35,7 +28,7 @@ jobs:
         language: [ 'go' ]
         # CodeQL supports [ 'cpp', 'csharp', 'go', 'java', 'javascript', 'python' ]
         # Learn more:
-        # https://docs.github.com/en/free-pro-team@latest/github/finding-security-vulnerabilities-and-errors-in-your-code/configuring-code-scanning#changing-the-languages-that-are-analyzed
+        # https://docs.github.com/en/code-security/code-scanning
 
     steps:
     - name: Checkout repository
@@ -47,30 +40,41 @@ jobs:
         go-version-file: go.mod
 
     # Initializes the CodeQL tools for scanning.
+    # 不指定 queries -> 使用默认查询套件
+    # 如需更强规则，取消注释并改为: security-extended / security-and-quality
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v4
       with:
         languages: ${{ matrix.language }}
-        # If you wish to specify custom queries, you can do so here or in a config file.
-        # By default, queries listed here will override any specified in a config file.
-        # Prefix the list here with "+" to use these queries and those in the config file.
-        # queries: ./path/to/local/query, your-org/your-repo/queries@main
+        # queries: security-extended
 
-    # Autobuild attempts to build any compiled languages  (C/C++, C#, or Java).
-    # If this step fails, then you should remove it and run the build manually (see below)
+    # Go 的 autobuild = go build ./...（concourse 无 Makefile，纯 Go 项目）
+    # 唯一 cgo 依赖 go-sqlite3 由 ubuntu-latest 自带 gcc 满足
     - name: Autobuild
       uses: github/codeql-action/autobuild@v4
 
-    # ℹ️ Command-line programs to run using the OS shell.
-    # 📚 https://git.io/JvXDl
-
-    # ✏️ If the Autobuild fails above, remove it and uncomment the following three lines
-    #    and modify them (or add more) to build your code if your project
-    #    uses a compiled language
-
-    #- run: |
-    #   make bootstrap
-    #   make release
-
+    # 显式输出到 runner.workspace/results（避免 SARIF 落到临时目录难找）
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v4
+      with:
+        output: ${{ runner.workspace }}/results
+
+    # 空目录守卫：扫描无产出时立刻报错，杜绝"成功但没结果"的静默失败
+    - name: Verify SARIF output
+      shell: bash
+      run: |
+        if ls "${{ runner.workspace }}/results"/*.sarif >/dev/null 2>&1; then
+          echo "::notice::SARIF files found:"
+          ls -la "${{ runner.workspace }}/results"/*.sarif
+        else
+          echo "::error::No SARIF files generated under ${{ runner.workspace }}/results"
+          exit 1
+        fi
+
+    # 上传 SARIF，供下载到本地分析（Actions -> Artifacts -> codeql-sarif-go.zip）
+    - name: Upload SARIF artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: codeql-sarif-${{ matrix.language }}
+        path: ${{ runner.workspace }}/results/**/*.sarif
+        if-no-files-found: error
